@@ -33,6 +33,7 @@ volatile float32_t hapt_motorTorque; // Motor torque [N.m].
 volatile float32_t hapt_stiffness; // Motor torque [N.m].
 volatile float32_t hapt_restAngle;
 volatile float32_t hapt_dampingFactor;
+volatile float32_t hapt_angularSpeed ;
 float32_t motorShaftAngleInit;
 
 void hapt_Update(void);
@@ -45,6 +46,7 @@ void hapt_Init(void)
 
     hapt_timestamp = 0;
     hapt_motorTorque = 0.0f;
+    hapt_restAngle = 0.0f ;
 
 
     // Make the timers call the update function periodically.
@@ -56,7 +58,7 @@ void hapt_Init(void)
     comm_monitorFloat("motor_torque [N.m]", (float32_t*)&hapt_motorTorque, READWRITE);
     comm_monitorFloat("stiffness [N*m/rad]", (float32_t*)&hapt_stiffness, READWRITE);
     comm_monitorFloat("Rest Angle [rad]", (float32_t*)&hapt_restAngle, READWRITE);
-    comm_monitorFloat("damping factor [unit]", (float32_t*)&hapt_restAngle, READWRITE);
+    comm_monitorFloat("damping factor [unit]", (float32_t*)&hapt_dampingFactor, READWRITE);
     comm_monitorFloat("encoder_paddle_pos [deg]", (float32_t*)&hapt_encoderPaddleAngle, READONLY);
     comm_monitorFloat("angular_speed [deg]", (float32_t*)&hapt_angularSpeed, READONLY);
     comm_monitorFloat("hall_voltage [V]", (float32_t*)&hapt_hallVoltage, READONLY);
@@ -104,14 +106,20 @@ void hapt_Update()
     hapt_encoderAngleOld = hapt_encoderPaddleAngle ;
     motorShaftAngle = enc_GetPosition() ;
     hapt_encoderPaddleAngle = motorShaftAngle / REDUCTION_RATIO;
-//    hapt_encoderAngleRad = 3.14*hapt_encoderPaddleAngle/180;
+    hapt_encoderAngleRad = 3.14*hapt_encoderPaddleAngle/180;
 
     hapt_angularSpeed=numerical_Diff( hapt_encoderAngleOld ,hapt_encoderPaddleAngle , dt);
 
     // Compute the motor torque, and apply it.
-//    hapt_motorTorque = -hapt_stiffness*(hapt_encoderAngleRad-hapt_restAngle)/REDUCTION_RATIO ;
     //hapt_motorTorque = 0.0f;
-    hapt_motorTorque
+    if(abs(hapt_restAngle - hapt_encoderPaddleAngle) <= 20 )
+    {
+    	hapt_motorTorque = -hapt_dampingFactor*hapt_angularSpeed-hapt_stiffness*(hapt_encoderAngleRad-hapt_restAngle)/REDUCTION_RATIO ; ;
+    }else{
+    	hapt_motorTorque = -hapt_stiffness*(hapt_encoderAngleRad-hapt_restAngle)/REDUCTION_RATIO ;
+    }
+    utils_SaturateF(&hapt_motorTorque, -0.05f, 0.05f) ;
+//	hapt_motorTorque = -hapt_stiffness*(hapt_encoderAngleRad-hapt_restAngle)/REDUCTION_RATIO ;
     torq_SetTorque(hapt_motorTorque);
 }
 
