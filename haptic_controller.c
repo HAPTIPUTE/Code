@@ -22,6 +22,8 @@
 #include "drivers/callback_timers.h"
 #include "lib/utils.h"
 #include "torque_regulator.h"
+#include "lib/basic_filter.h"
+
 
 #define DEFAULT_HAPTIC_CONTROLLER_PERIOD 350 // Default control loop period [us].
 #define RADIUS 0.075 // the radius of the paddle [m]
@@ -33,7 +35,14 @@ volatile float32_t hapt_motorTorque; // Motor torque [N.m].
 volatile float32_t hapt_stiffness; // Motor torque [N.m].
 volatile float32_t hapt_restAngle;
 volatile float32_t hapt_dampingFactor;
-volatile float32_t hapt_angularSpeed ;
+volatile float32_t hapt_angularSpeed;
+volatile float32_t hapt_estimVToAngle;
+volatile float32_t hapt_estimVToAngSpeed;
+bfilt_BasicFilter BasicFilter;
+volatile float32_t hapt_angularAcc;
+volatile float32_t hapt_estimVToAngAcc;
+
+
 float32_t motorShaftAngleInit;
 
 void hapt_Update(void);
@@ -60,8 +69,17 @@ void hapt_Init(void)
     comm_monitorFloat("Rest Angle [rad]", (float32_t*)&hapt_restAngle, READWRITE);
     comm_monitorFloat("damping factor [unit]", (float32_t*)&hapt_dampingFactor, READWRITE);
     comm_monitorFloat("encoder_paddle_pos [deg]", (float32_t*)&hapt_encoderPaddleAngle, READONLY);
-    comm_monitorFloat("angular_speed [deg]", (float32_t*)&hapt_angularSpeed, READONLY);
+    comm_monitorFloat("angular_speed [deg/s]", (float32_t*)&hapt_angularSpeed, READONLY);
     comm_monitorFloat("hall_voltage [V]", (float32_t*)&hapt_hallVoltage, READONLY);
+    comm_monitorFloat("hall_estimate angle from V [deg]", (float32_t*)&hapt_estimVToAngle, READONLY);
+    comm_monitorFloat("hall_estimate angular speed from V [deg/s]", (float32_t*)&hapt_estimVToAngSpeed, READONLY);
+    comm_monitorFloat("angular_acceleration [deg/s^2]", (float32_t*)&hapt_angularAcc, READONLY);
+    comm_monitorFloat("hall_estimate angular acceleration from V [deg/s^2]", (float32_t*)&hapt_estimVToAngAcc, READONLY);
+
+    float32_t tau = 0.2;
+    float32_t initialValue = 0;
+    bfilt_Init(&BasicFilter, tau, initialValue);
+
 
 //    if(hall_GetVoltage() > 2.6)
 //   	{
@@ -82,16 +100,26 @@ void hapt_Init(void)
   */
 
 
-float32_t numerical_Diff(float32_t old, float32_t new, float32_t dt)
-{
-	return (new-old)/(2*dt) ;
+float32_t VoltToDeg(float32_t Volt) {
+	return -52.1345 + 38.671 * Volt - 50;
 }
+
+float32_t numerical_Diff(float32_t old, float32_t new, float32_t dt) {
+	return (new-old)/(dt) ;
+}
+
 
 void hapt_Update()
 {
-    float32_t motorShaftAngle; // [deg].
+	float32_t motorShaftAngle; // [deg].
     float32_t hapt_encoderAngleRad ;
     float32_t hapt_encoderAngleOld = 0 ;
+    float32_t hapt_estimVToAngleOld = 0 ;
+    float32_t hapt_estimVToAngleOldOld = 0;
+    float32_t hapt_encoderAngleOldOld = 0;
+    float32_t hapt_angularSpeedOld = 0;
+    float32_t hapt_estimVToAngSpeedOld = 0;
+
 
     // Compute the dt (uncomment if you need it).
     float32_t dt = ((float32_t)cbt_GetHapticControllerPeriod()) / (1000000.0f); // [s].
@@ -102,13 +130,20 @@ void hapt_Update()
     // Get the Hall sensor voltage.
     hapt_hallVoltage = hall_GetVoltage();
 
+    hapt_hallVoltage = bfilt_Step(&BasicFilter, hapt_hallVoltage);
+
     // Get the encoder position.
+    hapt_encoderAngleOldOld = hapt_encoderAngleOld;
     hapt_encoderAngleOld = hapt_encoderPaddleAngle ;
     motorShaftAngle = enc_GetPosition() ;
     hapt_encoderPaddleAngle = motorShaftAngle / REDUCTION_RATIO;
     hapt_encoderAngleRad = 3.14*hapt_encoderPaddleAngle/180;
+    hapt_angularSpeedOld = hapt_angularSpeed;
 
     hapt_angularSpeed=numerical_Diff( hapt_encoderAngleOld ,hapt_encoderPaddleAngle , dt);
+    hapt_angularAcc=numerical_Diff( hapt_angularSpeedOld ,hapt_angularSpeed , dt);
+
+    //hapt_angularSpeed=numerical_Diff( hapt_encoderAngleOldOld ,hapt_encoderPaddleAngle ,2* dt);
 
     // Compute the motor torque, and apply it.
     //hapt_motorTorque = 0.0f;
@@ -121,6 +156,16 @@ void hapt_Update()
     utils_SaturateF(&hapt_motorTorque, -0.05f, 0.05f) ;
 //	hapt_motorTorque = -hapt_stiffness*(hapt_encoderAngleRad-hapt_restAngle)/REDUCTION_RATIO ;
     torq_SetTorque(hapt_motorTorque);
+    hapt_estimVToAngleOldOld = hapt_estimVToAngleOld;
+
+    hapt_estimVToAngleOld = hapt_estimVToAngle;
+
+    hapt_estimVToAngle = VoltToDeg(hapt_hallVoltage);
+    hapt_estimVToAngSpeedOld = hapt_estimVToAngSpeed;
+    hapt_estimVToAngSpeed = numerical_Diff( hapt_estimVToAngleOld,hapt_estimVToAngle,dt);
+
+    hapt_estimVToAngAcc = numerical_Diff( hapt_estimVToAngSpeedOld,hapt_estimVToAngSpeed,dt);
+
+    //hapt_estimVToAngSpeed = bfilt_Step(&BasicFilter, hapt_estimVToAngSpeed);
+
 }
-
-
